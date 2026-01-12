@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>BusTrack PWA - Smart Stop Tracking</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+    <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCuSqpZZ6SJJoMRrnbIjJMGz1M2TEvkbXo&libraries=geometry"></script>
+    
+    <style>
+        html, body { height: 100%; margin: 0; padding: 0; overflow-x: hidden; -webkit-tap-highlight-color: transparent; font-family: sans-serif; }
+        #map, #driver-map { height: 350px; width: 100%; border-radius: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); margin-top: 10px; }
+        .hidden { display: none !important; }
+        .app-nav { background: white; border-top: 1px solid #e2e8f0; position: fixed; bottom: 0; width: 100%; max-width: 28rem; }
+        
+        #sync-toast {
+            position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
+            background: #10b981; color: white; padding: 6px 16px; border-radius: 20px;
+            font-size: 12px; font-weight: bold; z-index: 1000; opacity: 0; transition: 0.3s;
+        }
+
+        .stop-chip { transition: 0.2s; white-space: nowrap; }
+        .stop-chip.active { background: #2563eb; color: white; border-color: #2563eb; }
+
+        .pulse-red { animation: pulse 2s infinite; }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+    </style>
+</head>
+<body class="bg-slate-50">
+
+    <div id="sync-toast">Synced ✓</div>
+
+    <div id="app-container" class="max-w-md mx-auto flex flex-col min-h-screen pb-20">
+        
+        <header class="p-6 flex justify-between items-center">
+            <h1 class="text-2xl font-black text-blue-600">BusTrack</h1>
+            <div id="status-dot" class="h-2 w-2 rounded-full bg-slate-300"></div>
+        </header>
+
+        <main class="px-4">
+            <!-- Role Selection -->
+            <div id="welcome-view" class="space-y-4">
+                <div class="bg-white p-8 rounded-3xl shadow-sm text-center">
+                    <p class="text-4xl mb-4">🏫</p>
+                    <h2 class="text-xl font-bold mb-6">Select Your Role</h2>
+                    <button onclick="showAuth('driver')" class="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold mb-3">Driver</button>
+                    <button onclick="showAuth('parent')" class="w-full py-4 border-2 border-blue-600 text-blue-600 rounded-2xl font-bold">Parent</button>
+                </div>
+            </div>
+
+            <!-- Login -->
+            <div id="auth-view" class="hidden bg-white p-8 rounded-3xl shadow-sm">
+                <h2 id="auth-title" class="text-xl font-bold mb-4">Login</h2>
+                <input type="text" id="username" placeholder="Bus Number / ID" class="w-full p-4 bg-slate-100 rounded-xl mb-4 outline-none">
+                <button onclick="handleAuth()" class="w-full py-4 bg-green-500 text-white rounded-2xl font-bold">Continue</button>
+            </div>
+
+            <!-- Driver Console -->
+            <div id="driver-view" class="hidden space-y-4">
+                <div class="bg-blue-600 text-white p-6 rounded-3xl shadow-lg">
+                    <p class="text-xs opacity-80 uppercase font-bold">Driver Console</p>
+                    <h2 id="driver-bus-name" class="text-2xl font-bold">--</h2>
+                </div>
+
+                <!-- Google Sites Fix: Manual Override -->
+                <div id="sites-fix-panel" class="bg-orange-50 border border-orange-200 p-4 rounded-2xl">
+                    <div class="flex items-start space-x-3">
+                        <span class="text-xl">⚠️</span>
+                        <div>
+                            <p class="text-xs font-bold text-orange-800">GOOGLE SITES BLOCKED GPS</p>
+                            <p class="text-[10px] text-orange-700 mt-1">Google Sites sandboxes prevent automatic GPS. You must manually tap your location on the map below to update your position for parents.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-white p-4 rounded-3xl shadow-sm">
+                    <p class="text-[10px] font-bold text-slate-400 uppercase mb-2">1. Set Route</p>
+                    <div id="driver-stop-list" class="flex flex-wrap gap-2"></div>
+                </div>
+
+                <div class="bg-white p-4 rounded-3xl shadow-sm">
+                    <p class="text-[10px] font-bold text-slate-400 uppercase mb-2">2. Update Your Location (Tap Map)</p>
+                    <div id="driver-map"></div>
+                    <p class="text-[10px] text-center text-slate-400 mt-2 italic">Tap exactly where the bus is on the map</p>
+                </div>
+
+                <button onclick="location.reload()" class="w-full py-4 bg-slate-200 text-slate-600 rounded-2xl font-bold">Log Out</button>
+            </div>
+
+            <!-- Parent View -->
+            <div id="parent-view" class="hidden space-y-4">
+                <div class="bg-white p-4 rounded-3xl shadow-sm">
+                    <label class="text-[10px] font-bold text-slate-400 uppercase">Select Bus</label>
+                    <select id="parent-bus-select" class="w-full p-3 bg-slate-100 rounded-xl mt-1 outline-none font-bold">
+                        <option value="">Searching for buses...</option>
+                    </select>
+                </div>
+
+                <div id="parent-info-card" class="hidden bg-white p-4 rounded-3xl shadow-sm">
+                    <div class="flex justify-between items-center mb-4">
+                        <div>
+                            <p class="text-[10px] font-bold text-slate-400 uppercase">Next Destination</p>
+                            <p id="parent-next-stop" class="font-bold text-blue-600 text-lg">---</p>
+                        </div>
+                        <div id="eta-pill" class="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-xs font-bold">-- min</div>
+                    </div>
+                    <div id="map"></div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        // Firebase Config
+        const firebaseConfig = {
+            apiKey: "AIzaSyALggpjG6yq_Ftm9WxJoC1wYDnkQfbH2D4",
+            authDomain: "mybusappwithtracking.firebaseapp.com",
+            projectId: "mybusappwithtracking",
+            storageBucket: "mybusappwithtracking.firebasestorage.app",
+            messagingSenderId: "253656408774",
+            appId: "1:253656408774:web:90033b2586b8b7b0aeadc7"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+        const appId = 'bus-tracker-v3';
+
+        const STOPS = [
+            { id: 1, name: "North Gate", lat: 39.083, lng: -77.151 },
+            { id: 2, name: "Main Office", lat: 39.085, lng: -77.155 },
+            { id: 3, name: "Library", lat: 39.088, lng: -77.158 }
+        ];
+
+        let role, busId, currentBusName;
+        let driverMap, parentMap, busMarker;
+        let selectedRoute = [];
+
+        function showAuth(r) {
+            role = r;
+            document.getElementById('welcome-view').classList.add('hidden');
+            document.getElementById('auth-view').classList.remove('hidden');
+            document.getElementById('auth-title').innerText = r === 'driver' ? 'Driver Login' : 'Parent Portal';
+        }
+
+        async function handleAuth() {
+            const name = document.getElementById('username').value.trim();
+            if(!name) return;
+            currentBusName = name;
+            await firebase.auth().signInAnonymously();
+            busId = firebase.auth().currentUser.uid;
+            
+            document.getElementById('auth-view').classList.add('hidden');
+            document.getElementById('status-dot').style.backgroundColor = '#10b981';
+            
+            if(role === 'driver') initDriver(); else initParent();
+        }
+
+        function initDriver() {
+            document.getElementById('driver-view').classList.remove('hidden');
+            document.getElementById('driver-bus-name').innerText = currentBusName;
+            
+            // Driver Map Initialization
+            driverMap = new google.maps.Map(document.getElementById('driver-map'), {
+                zoom: 15,
+                center: { lat: 39.085, lng: -77.155 },
+                disableDefaultUI: true
+            });
+
+            // The "Google Sites Fix" - Allow driver to tap their location
+            driverMap.addListener('click', (e) => {
+                updateBusLocation(e.latLng.lat(), e.latLng.lng());
+            });
+
+            renderDriverStops();
+        }
+
+        function renderDriverStops() {
+            const container = document.getElementById('driver-stop-list');
+            container.innerHTML = "";
+            STOPS.forEach(stop => {
+                const btn = document.createElement('button');
+                const idx = selectedRoute.indexOf(stop.id);
+                btn.className = `stop-chip px-4 py-2 rounded-full border text-xs font-bold ${idx > -1 ? 'active' : 'bg-white text-slate-500'}`;
+                btn.innerText = stop.name;
+                btn.onclick = () => {
+                    if(idx > -1) selectedRoute.splice(idx, 1);
+                    else selectedRoute.push(stop.id);
+                    renderDriverStops();
+                };
+                container.appendChild(btn);
+            });
+        }
+
+        async function updateBusLocation(lat, lng) {
+            const nextStopName = selectedRoute.length > 0 ? STOPS.find(s => s.id === selectedRoute[0]).name : "In Transit";
+            await db.collection('artifacts').doc(appId).collection('public').doc('data').collection('buses').doc(busId).set({
+                name: currentBusName,
+                lat, lng,
+                nextStop: nextStopName,
+                route: selectedRoute,
+                lastUpdate: firebase.firestore.FieldValue.serverTimestamp()
+            });
+            
+            const toast = document.getElementById('sync-toast');
+            toast.style.opacity = '1';
+            setTimeout(() => toast.style.opacity = '0', 2000);
+        }
+
+        function initParent() {
+            document.getElementById('parent-view').classList.remove('hidden');
+            parentMap = new google.maps.Map(document.getElementById('map'), {
+                zoom: 15,
+                center: { lat: 39.085, lng: -77.155 },
+                disableDefaultUI: true
+            });
+            busMarker = new google.maps.Marker({ map: parentMap, icon: { url: 'https://maps.google.com/mapfiles/ms/icons/bus.png' } });
+
+            // Listen for active buses
+            db.collection('artifacts').doc(appId).collection('public').doc('data').collection('buses').onSnapshot(snap => {
+                const select = document.getElementById('parent-bus-select');
+                const current = select.value;
+                select.innerHTML = '<option value="">Select Bus...</option>';
+                snap.forEach(doc => {
+                    const opt = document.createElement('option');
+                    opt.value = doc.id; opt.text = doc.data().name; select.add(opt);
+                });
+                select.value = current;
+            });
+
+            document.getElementById('parent-bus-select').onchange = (e) => {
+                if(!e.target.value) return;
+                db.collection('artifacts').doc(appId).collection('public').doc('data').collection('buses').doc(e.target.value).onSnapshot(doc => {
+                    const data = doc.data();
+                    if(data) {
+                        document.getElementById('parent-info-card').classList.remove('hidden');
+                        document.getElementById('parent-next-stop').innerText = data.nextStop;
+                        const pos = { lat: data.lat, lng: data.lng };
+                        busMarker.setPosition(pos);
+                        parentMap.panTo(pos);
+                    }
+                });
+            };
+        }
+    </script>
+</body>
+</html>
